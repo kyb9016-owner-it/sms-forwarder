@@ -88,12 +88,37 @@ ngrok http 8000
 
 ---
 
-## 3단계: WeCom 웹훅 설정
+## 3단계: WeCom 설정
+
+### 방법 A: 자체 앱 API (권장)
+
+그룹 봇(웹훅)이 비활성화된 경우 자체 앱을 만들어 메시지를 전송합니다.
+
+1. [WeCom 관리 콘솔](https://work.weixin.qq.com) 에 접속합니다.
+2. **App Management** → 페이지 하단 **Create an app** 을 클릭합니다.
+3. 앱 이름 입력 (예: `验证码Bot`), Allowed users 설정 후 생성합니다.
+4. 생성된 앱 페이지에서 **AgentId**, **Secret** 을 확인합니다.
+5. 좌측 메뉴 **My Company** 에서 **Corp ID** 를 확인합니다.
+6. 서버 환경변수에 입력합니다:
+   ```
+   WECOM_ENABLED=true
+   WECOM_CORP_ID=wwc4d5910e9e90ed25
+   WECOM_SECRET=your-app-secret
+   WECOM_AGENT_ID=1000003
+   ```
+
+### 방법 B: 웹훅 URL (그룹 봇)
+
+그룹 봇 기능이 활성화된 경우 더 간단하게 설정할 수 있습니다.
 
 1. WeCom(企业微信) 앱에서 인증번호를 받을 **그룹 채팅**을 엽니다.
 2. 그룹 이름 → **그룹 관리** → **봇 추가** → **새 봇 만들기** 를 선택합니다.
 3. 봇 이름을 입력하고 완료하면 **웹훅 URL** 이 표시됩니다.
-4. URL을 복사하여 서버의 `WECOM_WEBHOOK_URL` 환경변수에 입력합니다.
+4. URL을 복사하여 서버 환경변수에 입력합니다:
+   ```
+   WECOM_ENABLED=true
+   WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+   ```
 
 ---
 

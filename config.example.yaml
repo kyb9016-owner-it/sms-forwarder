@@ -5,7 +5,12 @@ telegram:
   enabled: true
 
 wecom:
-  webhook_url: "YOUR_WECOM_WEBHOOK_URL"
+  # 방법 1: 자체 앱 API (권장)
+  corp_id: "YOUR_CORP_ID"
+  secret: "YOUR_APP_SECRET"
+  agent_id: "YOUR_AGENT_ID"
+  # 방법 2: 웹훅 URL (그룹 봇 사용 시)
+  # webhook_url: "YOUR_WECOM_WEBHOOK_URL"
   enabled: true
 
 # 감시 설정

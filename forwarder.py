@@ -146,23 +146,86 @@ def send_telegram(token: str, chat_id: str, message: str) -> bool:
         return False
 
 
-def send_wecom(webhook_url: str, message: str) -> bool:
+def get_wecom_access_token(corp_id: str, secret: str) -> str | None:
+    """WeCom 자체 앱 API용 access_token을 가져옵니다."""
+    url = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+    params = {"corpid": corp_id, "corpsecret": secret}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("errcode") == 0:
+                return data["access_token"]
+            else:
+                logger.error("WeCom access_token 획득 실패: %s", data)
+                return None
+        else:
+            logger.error("WeCom access_token 요청 실패: %s", resp.status_code)
+            return None
+    except requests.RequestException as e:
+        logger.error("WeCom access_token 오류: %s", e)
+        return None
+
+
+def send_wecom_app(corp_id: str, secret: str, agent_id: str, message: str) -> bool:
+    """WeCom 자체 앱 API를 통해 메시지를 전송합니다."""
+    access_token = get_wecom_access_token(corp_id, secret)
+    if not access_token:
+        return False
+    url = f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={access_token}"
+    payload = {
+        "touser": "@all",
+        "msgtype": "text",
+        "agentid": int(agent_id),
+        "text": {"content": message},
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("errcode") == 0:
+                logger.info("WeCom 앱 전송 성공")
+                return True
+            else:
+                logger.error("WeCom 앱 전송 실패: %s", data)
+                return False
+        else:
+            logger.error("WeCom 앱 전송 실패: %s %s", resp.status_code, resp.text)
+            return False
+    except requests.RequestException as e:
+        logger.error("WeCom 앱 전송 오류: %s", e)
+        return False
+
+
+def send_wecom_webhook(webhook_url: str, message: str) -> bool:
+    """WeCom 웹훅 URL을 통해 메시지를 전송합니다."""
     payload = {"msgtype": "text", "text": {"content": message}}
     try:
         resp = requests.post(webhook_url, json=payload, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             if data.get("errcode") == 0:
-                logger.info("WeCom 전송 성공")
+                logger.info("WeCom 웹훅 전송 성공")
                 return True
             else:
-                logger.error("WeCom 전송 실패: %s", data)
+                logger.error("WeCom 웹훅 전송 실패: %s", data)
                 return False
         else:
-            logger.error("WeCom 전송 실패: %s %s", resp.status_code, resp.text)
+            logger.error("WeCom 웹훅 전송 실패: %s %s", resp.status_code, resp.text)
             return False
     except requests.RequestException as e:
-        logger.error("WeCom 전송 오류: %s", e)
+        logger.error("WeCom 웹훅 전송 오류: %s", e)
+        return False
+
+
+def send_wecom(wc_cfg: dict, message: str) -> bool:
+    """WeCom으로 메시지를 전송합니다. 앱 API 우선, 없으면 웹훅 사용."""
+    if wc_cfg.get("corp_id") and wc_cfg.get("secret") and wc_cfg.get("agent_id"):
+        return send_wecom_app(wc_cfg["corp_id"], wc_cfg["secret"], wc_cfg["agent_id"], message)
+    elif wc_cfg.get("webhook_url"):
+        return send_wecom_webhook(wc_cfg["webhook_url"], message)
+    else:
+        logger.error("WeCom 설정이 없습니다.")
         return False
 
 
@@ -251,7 +314,7 @@ def run(cfg: dict):
                 send_telegram(tg_cfg["bot_token"], tg_cfg["chat_id"], formatted)
 
             if wc_cfg.get("enabled"):
-                send_wecom(wc_cfg["webhook_url"], formatted)
+                send_wecom(wc_cfg, formatted)
 
         time.sleep(interval)
 
