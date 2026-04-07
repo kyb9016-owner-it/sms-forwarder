@@ -14,7 +14,13 @@ services:
       - key: TELEGRAM_CHAT_ID
         sync: false
       - key: WECOM_ENABLED
-        value: "false"
+        value: "true"
+      - key: WECOM_CORP_ID
+        sync: false
+      - key: WECOM_SECRET
+        sync: false
+      - key: WECOM_AGENT_ID
+        sync: false
       - key: WECOM_WEBHOOK_URL
         sync: false
       - key: ALLOWED_SENDERS
