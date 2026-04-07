@@ -1,0 +1,31 @@
+# SMS 인증번호 자동 전달 설정
+telegram:
+  bot_token: "YOUR_BOT_TOKEN"
+  chat_id: "YOUR_CHAT_ID"
+  enabled: true
+
+wecom:
+  webhook_url: "YOUR_WECOM_WEBHOOK_URL"
+  enabled: true
+
+# 감시 설정
+watch:
+  interval_seconds: 2  # DB 폴링 간격
+  messages_db: "~/Library/Messages/chat.db"
+
+# 발신번호 필터 (비어있으면 모든 번호에서 감지)
+# 특정 번호만 감시하려면 아래에 추가
+senders:
+  # - "15881234"      # 토스
+  # - "01012345678"   # 특정 번호
+  # - "+8215881234"   # 국제 형식도 가능
+
+# 인증번호 패턴 (정규식)
+patterns:
+  - '\[.*?\]\s*인증번호.*?(\d{4,8})'
+  - '인증번호\s*[:\s]*(\d{4,8})'
+  - '인증코드\s*[:\s]*(\d{4,8})'
+  - '확인코드\s*[:\s]*(\d{4,8})'
+  - 'verification code\s*[:\s]*(\d{4,8})'
+  - '본인확인.*?(\d{4,8})'
+  - '\b(\d{6})\b.*인증'
