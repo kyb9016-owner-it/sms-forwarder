@@ -3,3 +3,8 @@ __pycache__/
 .env
 config.yaml
 .venv/
+
+# 스크린샷 (SMS 인증번호·연락처가 찍혀 있을 수 있어 커밋 금지)
+*.PNG
+*.png
+*.jpg

@@ -3,14 +3,20 @@ SMS 인증번호 전달 서버
 iPhone 단축어에서 웹훅을 받아 Telegram/WeCom으로 전달합니다.
 """
 
+import base64
+import collections
+import hashlib
 import logging
 import os
 import re
+import struct
 from datetime import datetime, timezone, timedelta
 
 import httpx
+from Crypto.Cipher import AES
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -32,7 +38,12 @@ TELEGRAM_ENABLED: bool = os.environ.get("TELEGRAM_ENABLED", "false").lower() == 
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
 WECOM_ENABLED: bool = os.environ.get("WECOM_ENABLED", "false").lower() == "true"
-WECOM_WEBHOOK_URL: str = os.environ.get("WECOM_WEBHOOK_URL", "")
+WECOM_CORP_ID: str = os.environ.get("WECOM_CORP_ID", "")
+WECOM_AGENT_ID: str = os.environ.get("WECOM_AGENT_ID", "")
+WECOM_SECRET: str = os.environ.get("WECOM_SECRET", "")
+WECOM_TO_USER: str = os.environ.get("WECOM_TO_USER", "")
+WECOM_TOKEN: str = os.environ.get("WECOM_TOKEN", "")
+WECOM_ENCODING_AES_KEY: str = os.environ.get("WECOM_ENCODING_AES_KEY", "")
 
 _raw_senders = os.environ.get("ALLOWED_SENDERS", "").strip()
 ALLOWED_SENDERS: list[str] = [s.strip() for s in _raw_senders.split(",") if s.strip()] if _raw_senders else []
@@ -46,6 +57,9 @@ PATTERNS: list[str] = [
     r"verification\s*code[^\d]*(\d{4,8})",
     r"(?:^|[^0-9])(\d{6})(?:[^0-9]|$)",  # 6자리 독립 숫자 (마지막 수단)
 ]
+
+# ── 인증번호 히스토리 (최근 20개) ────────────────────────────────────────────
+code_history: collections.deque = collections.deque(maxlen=20)
 
 # ── FastAPI ─────────────────────────────────────────────────────────────────
 app = FastAPI(title="SMS 인증번호 전달 서버", docs_url=None, redoc_url=None)
@@ -116,21 +130,56 @@ async def send_telegram(message: str) -> bool:
         return False
 
 
+def _wecom_decrypt_echostr(encrypted: str, encoding_aes_key: str) -> str:
+    key = base64.b64decode(encoding_aes_key + "=")
+    cipher = AES.new(key, AES.MODE_CBC, key[:16])
+    decrypted = cipher.decrypt(base64.b64decode(encrypted))
+    pad = decrypted[-1]
+    decrypted = decrypted[:-pad]
+    msg_len = struct.unpack(">I", decrypted[16:20])[0]
+    return decrypted[20:20 + msg_len].decode("utf-8")
+
+
+def _wecom_verify_signature(token: str, timestamp: str, nonce: str, echostr: str, msg_signature: str) -> bool:
+    items = sorted([token, timestamp, nonce, echostr])
+    signature = hashlib.sha1("".join(items).encode()).hexdigest()
+    return signature == msg_signature
+
+
+async def get_wecom_access_token(client: httpx.AsyncClient) -> str | None:
+    url = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+    params = {"corpid": WECOM_CORP_ID, "corpsecret": WECOM_SECRET}
+    try:
+        resp = await client.get(url, params=params)
+        data = resp.json()
+        if data.get("errcode") == 0:
+            return data["access_token"]
+        logger.error("WeCom 토큰 발급 실패: %s", data)
+        return None
+    except httpx.HTTPError as e:
+        logger.error("WeCom 토큰 요청 오류: %s", e)
+        return None
+
+
 async def send_wecom(message: str) -> bool:
-    payload = {"msgtype": "text", "text": {"content": message}}
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(WECOM_WEBHOOK_URL, json=payload)
-        if resp.status_code == 200:
+            token = await get_wecom_access_token(client)
+            if not token:
+                return False
+            url = f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}"
+            payload = {
+                "touser": WECOM_TO_USER,
+                "msgtype": "text",
+                "agentid": int(WECOM_AGENT_ID),
+                "text": {"content": message},
+            }
+            resp = await client.post(url, json=payload)
             data = resp.json()
             if data.get("errcode") == 0:
                 logger.info("WeCom 전송 성공")
                 return True
-            else:
-                logger.error("WeCom 전송 실패: %s", data)
-                return False
-        else:
-            logger.error("WeCom 전송 실패: %s %s", resp.status_code, resp.text)
+            logger.error("WeCom 전송 실패: %s", data)
             return False
     except httpx.HTTPError as e:
         logger.error("WeCom 전송 오류: %s", e)
@@ -138,6 +187,67 @@ async def send_wecom(message: str) -> bool:
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────────────────
+
+@app.get("/wecom/callback")
+async def wecom_callback_verify(
+    msg_signature: str,
+    timestamp: str,
+    nonce: str,
+    echostr: str,
+):
+    if not _wecom_verify_signature(WECOM_TOKEN, timestamp, nonce, echostr, msg_signature):
+        raise HTTPException(status_code=403, detail="서명 검증 실패")
+    plaintext = _wecom_decrypt_echostr(echostr, WECOM_ENCODING_AES_KEY)
+    logger.info("WeCom 콜백 검증 성공")
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(plaintext)
+
+
+@app.get("/codes", response_class=HTMLResponse)
+async def codes_page():
+    today = datetime.now(tz=KST).strftime("%Y-%m-%d")
+    items_html = ""
+    for entry in code_history:
+        if not entry["time"].startswith(today):
+            continue
+        sender = entry['sender']
+        if len(sender) >= 4:
+            sender = sender[:3] + "****" + sender[-4:]
+        items_html += f"""
+        <div class="card">
+            <div class="code">{entry['code']}</div>
+            <div class="meta">발신: {sender}</div>
+            <div class="meta">{entry['message']}</div>
+            <div class="time">{entry['time']}</div>
+        </div>"""
+    if not items_html:
+        items_html = '<div class="empty">수신된 인증번호가 없습니다.</div>'
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>인증번호</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: -apple-system, sans-serif; background: #f5f5f5; padding: 16px; }}
+  h1 {{ font-size: 18px; color: #333; margin-bottom: 16px; text-align: center; }}
+  .card {{ background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }}
+  .code {{ font-size: 36px; font-weight: bold; color: #1677ff; letter-spacing: 4px; text-align: center; margin-bottom: 8px; }}
+  .meta {{ font-size: 13px; color: #666; margin-top: 4px; }}
+  .time {{ font-size: 12px; color: #999; margin-top: 6px; }}
+  .empty {{ text-align: center; color: #999; margin-top: 40px; }}
+  .refresh-btn {{ display: block; width: 100%; padding: 12px; background: #1677ff; color: #fff; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; margin-top: 8px; }}
+</style>
+</head>
+<body>
+<h1>🔐 인증번호</h1>
+<button class="refresh-btn" onclick="location.reload()">새로고침</button>
+{items_html}
+</body>
+</html>"""
+
 
 @app.get("/")
 async def root():
@@ -186,6 +296,13 @@ async def webhook(body: WebhookRequest):
     now_kst = datetime.now(tz=KST)
     formatted = format_message(body.sender, code, body.message, now_kst)
     logger.info("인증번호 감지 | 발신: %s | 코드: %s", body.sender, code)
+
+    code_history.appendleft({
+        "code": code,
+        "sender": body.sender,
+        "message": body.message.strip()[:100],
+        "time": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
+    })
 
     results: dict[str, str] = {}
 
