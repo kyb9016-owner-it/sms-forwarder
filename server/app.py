@@ -47,6 +47,9 @@ WECOM_ENCODING_AES_KEY: str = os.environ.get("WECOM_ENCODING_AES_KEY", "")
 
 _raw_senders = os.environ.get("ALLOWED_SENDERS", "").strip()
 ALLOWED_SENDERS: list[str] = [s.strip() for s in _raw_senders.split(",") if s.strip()] if _raw_senders else []
+# 텔레그램으로만 전달할 발신 태그(쉼표 구분). 예: "CN-6s"
+_raw_tg_only = os.environ.get("TELEGRAM_ONLY_SENDERS", "").strip()
+TELEGRAM_ONLY_SENDERS: list[str] = [s.strip() for s in _raw_tg_only.split(",") if s.strip()] if _raw_tg_only else []
 
 # ── 인증번호 추출 패턴 ───────────────────────────────────────────────────────
 PATTERNS: list[str] = [
@@ -302,6 +305,23 @@ async def webhook(body: WebhookRequest):
     formatted = format_message(body.sender, code, body.message, now_kst)
     logger.info("인증번호 감지 | 발신: %s | 코드: %s", body.sender, code)
 
+    # 경로 분리(2026-09-14): TELEGRAM_ONLY_SENDERS 에 든 발신 태그(예: 중국번호 6s 의 "CN-6s")는
+    # 텔레그램으로만 보내고 직원 조회 페이지(/codes)·WeCom 에는 남기지 않는다.
+    # 그 외(한국 폰)는 종전대로 조회 페이지·WeCom 만 — 사장님 텔레그램으로는 보내지 않는다.
+    # 목록이 비어 있으면 옛 동작(전부에게 전부) 유지.
+    telegram_only = bool(TELEGRAM_ONLY_SENDERS) and body.sender.strip() in TELEGRAM_ONLY_SENDERS
+    results: dict[str, str] = {}
+
+    if telegram_only:
+        if TELEGRAM_ENABLED:
+            ok = await send_telegram(formatted)
+            results["telegram"] = "성공" if ok else "실패"
+        else:
+            results["telegram"] = "비활성화"
+        results["wecom"] = "건너뜀(텔레그램 전용 발신)"
+        logger.info("전달 결과 | %s", results)
+        return {"status": "forwarded", "code": code, "results": results}
+
     code_history.appendleft({
         "code": code,
         "sender": body.sender,
@@ -309,13 +329,11 @@ async def webhook(body: WebhookRequest):
         "time": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
     })
 
-    results: dict[str, str] = {}
-
-    if TELEGRAM_ENABLED:
+    if TELEGRAM_ENABLED and not TELEGRAM_ONLY_SENDERS:
         ok = await send_telegram(formatted)
         results["telegram"] = "성공" if ok else "실패"
     else:
-        results["telegram"] = "비활성화"
+        results["telegram"] = "비활성화" if not TELEGRAM_ENABLED else "건너뜀(텔레그램 전용 발신 아님)"
 
     if WECOM_ENABLED:
         ok = await send_wecom(formatted)
