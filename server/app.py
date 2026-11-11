@@ -275,23 +275,20 @@ async def health():
         "status": "ok",
         "telegram": "활성화" if TELEGRAM_ENABLED else "비활성화",
         "wecom": "활성화" if WECOM_ENABLED else "비활성화",
-        "allowed_senders": ALLOWED_SENDERS if ALLOWED_SENDERS else "전체 허용",
     }
 
 
 @app.post("/webhook")
 async def webhook(body: WebhookRequest):
-    logger.info("웹훅 수신 | 발신: %s | 메시지: %s", body.sender, body.message[:50])
-
-    # 인증 토큰 확인
+    # 인증 토큰 확인 (본문은 인증 전·후 모두 로그에 남기지 않는다 — 인증번호가 들어 있음)
     if not AUTH_TOKEN:
         logger.error("AUTH_TOKEN이 설정되지 않았습니다.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="서버 설정 오류: AUTH_TOKEN이 없습니다.",
         )
-    if body.token != AUTH_TOKEN:
-        logger.warning("인증 실패 | 발신: %s", body.sender)
+    if not hmac.compare_digest(body.token.encode(), AUTH_TOKEN.encode()):
+        logger.warning("인증 실패")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="인증 토큰이 올바르지 않습니다.",
@@ -305,12 +302,12 @@ async def webhook(body: WebhookRequest):
     # 인증번호 추출
     code = extract_code(body.message)
     if not code:
-        logger.info("인증번호 없음 | 발신: %s | 메시지: %s", body.sender, body.message[:50])
+        logger.info("인증번호 없음 | 발신: %s | 길이: %d", body.sender, len(body.message))
         return {"status": "skipped", "message": "인증번호를 찾을 수 없습니다."}
 
     now_kst = datetime.now(tz=KST)
     formatted = format_message(body.sender, code, body.message, now_kst)
-    logger.info("인증번호 감지 | 발신: %s | 코드: %s", body.sender, code)
+    logger.info("인증번호 감지 | 발신: %s | 코드 길이: %d", body.sender, len(code))
 
     # 경로 분리(2026-09-14): TELEGRAM_ONLY_SENDERS 에 든 발신 태그(예: 중국번호 6s 의 "CN-6s")는
     # 텔레그램으로만 보내고 직원 조회 페이지(/codes)·WeCom 에는 남기지 않는다.
