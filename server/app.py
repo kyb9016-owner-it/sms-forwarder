@@ -6,6 +6,7 @@ iPhone 단축어에서 웹훅을 받아 Telegram/WeCom으로 전달합니다.
 import base64
 import collections
 import hashlib
+import hmac
 import logging
 import os
 import re
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 # ── 환경변수 ─────────────────────────────────────────────────────────────────
 AUTH_TOKEN: str = os.environ.get("AUTH_TOKEN", "")
+# /codes 조회 키. 비어 있으면 페이지를 아예 열지 않는다(무인증 공개 방지, 2026-11-11).
+CODES_KEY: str = os.environ.get("CODES_KEY", "")
 TELEGRAM_ENABLED: bool = os.environ.get("TELEGRAM_ENABLED", "false").lower() == "true"
 TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -70,7 +73,7 @@ PATTERNS: list[str] = [
 code_history: collections.deque = collections.deque(maxlen=20)
 
 # ── FastAPI ─────────────────────────────────────────────────────────────────
-app = FastAPI(title="SMS 인증번호 전달 서버", docs_url=None, redoc_url=None)
+app = FastAPI(title="SMS 인증번호 전달 서버", docs_url=None, redoc_url=None, openapi_url=None)
 
 
 # ── 모델 ─────────────────────────────────────────────────────────────────────
@@ -212,7 +215,10 @@ async def wecom_callback_verify(
 
 
 @app.get("/codes", response_class=HTMLResponse)
-async def codes_page():
+async def codes_page(k: str = ""):
+    # 키가 없거나 틀리면 존재 자체를 숨긴다(404).
+    if not CODES_KEY or not hmac.compare_digest(k.encode(), CODES_KEY.encode()):
+        raise HTTPException(status_code=404, detail="Not Found")
     today = datetime.now(tz=KST).strftime("%Y-%m-%d")
     items_html = ""
     for entry in code_history:
@@ -236,6 +242,7 @@ async def codes_page():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
 <title>인증번호</title>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
